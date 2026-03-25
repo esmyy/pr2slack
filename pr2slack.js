@@ -1,0 +1,469 @@
+#!/usr/bin/env node
+
+import { execFileSync } from "node:child_process";
+import process from "node:process";
+
+const HELP_TEXT = `
+pr2slack - Send current GitHub PR URL to Slack
+
+Usage:
+  pr2slack [options]
+
+Options:
+  -w, --webhook <url>   Slack incoming webhook URL
+                        (default: env SLACK_WEBHOOK_URL)
+  -u, --url <url>       PR URL (skip gh lookup)
+  -t, --title <text>    PR title used with --url
+  -m, --message <text>  Extra note appended after PR link
+  -r, --reviewers <list>
+                        Comma-separated reviewers to mention
+                        (example: alice,bob)
+                        (default: env PR2SLACK_DEFAULT_REVIEWERS)
+  --random              Pick random reviewers from SLACK_USER_MAP keys
+  --max-reviewers <n>   Mention at most n reviewers
+  --team <name|ref>     Slack team mention (map key, subteam ID, token, or text)
+                        (default: env PR2SLACK_DEFAULT_TEAM)
+  --team-map <json>     JSON map: team name -> Slack subteam ID
+                        (default: env SLACK_TEAM_MAP)
+  --slack-user-map <json>
+                        JSON map: GitHub login -> Slack user ID
+                        (default: env SLACK_USER_MAP)
+  --raw-url-only        Send only the PR URL without title/context
+  --dry-run             Print payload instead of sending to Slack
+  -h, --help            Show help
+
+Examples:
+  pr2slack
+  pr2slack -m "Please review this today"
+  pr2slack --webhook https://hooks.slack.com/services/XXX/YYY/ZZZ
+  pr2slack --url https://github.com/org/repo/pull/123
+  pr2slack -r alice,bob
+  pr2slack --random
+  pr2slack -r alice,bob --max-reviewers 2
+  pr2slack --team backend
+  pr2slack --raw-url-only
+`;
+
+function parseArgs(argv) {
+  const args = {
+    webhook: process.env.SLACK_WEBHOOK_URL ?? "",
+    slackUserMap: process.env.SLACK_USER_MAP ?? "",
+    url: "",
+    title: "",
+    message: "",
+    reviewers:
+      process.env.PR2SLACK_DEFAULT_REVIEWERS ??
+      process.env.PR2SLACK_REVIEWERS ??
+      "",
+    randomReviewers: false,
+    maxReviewers: 0,
+    team:
+      process.env.PR2SLACK_DEFAULT_TEAM ??
+      process.env.PR2SLACK_TEAM ??
+      "",
+    teamMap: process.env.SLACK_TEAM_MAP ?? "",
+    rawUrlOnly: false,
+    dryRun: false,
+    help: false,
+  };
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const current = argv[i];
+    const next = argv[i + 1];
+
+    if (current === "-h" || current === "--help") {
+      args.help = true;
+      continue;
+    }
+    if (current === "--dry-run") {
+      args.dryRun = true;
+      continue;
+    }
+    if (current === "--raw-url-only") {
+      args.rawUrlOnly = true;
+      continue;
+    }
+    if (current === "-r" || current === "--reviewers") {
+      if (!next) {
+        throw new Error("Missing value for -r/--reviewers");
+      }
+      args.reviewers = next;
+      i += 1;
+      continue;
+    }
+    if (current === "--random") {
+      args.randomReviewers = true;
+      continue;
+    }
+    if (current === "--max-reviewers") {
+      if (!next) {
+        throw new Error("Missing value for --max-reviewers");
+      }
+      const parsed = Number.parseInt(next, 10);
+      if (!Number.isInteger(parsed) || parsed < 1) {
+        throw new Error("--max-reviewers must be a positive integer");
+      }
+      args.maxReviewers = parsed;
+      i += 1;
+      continue;
+    }
+    if (current === "--team") {
+      if (!next) {
+        throw new Error("Missing value for --team");
+      }
+      args.team = next;
+      i += 1;
+      continue;
+    }
+    if (current === "--team-map") {
+      if (!next) {
+        throw new Error("Missing value for --team-map");
+      }
+      args.teamMap = next;
+      i += 1;
+      continue;
+    }
+    if (current === "-w" || current === "--webhook") {
+      if (!next) {
+        throw new Error("Missing value for --webhook");
+      }
+      args.webhook = next;
+      i += 1;
+      continue;
+    }
+    if (current === "-u" || current === "--url") {
+      if (!next) {
+        throw new Error("Missing value for --url");
+      }
+      args.url = next;
+      i += 1;
+      continue;
+    }
+    if (current === "-t" || current === "--title") {
+      if (!next) {
+        throw new Error("Missing value for --title");
+      }
+      args.title = next;
+      i += 1;
+      continue;
+    }
+    if (current === "-m" || current === "--message") {
+      if (!next) {
+        throw new Error("Missing value for --message");
+      }
+      args.message = next;
+      i += 1;
+      continue;
+    }
+    if (current === "--slack-user-map") {
+      if (!next) {
+        throw new Error("Missing value for --slack-user-map");
+      }
+      args.slackUserMap = next;
+      i += 1;
+      continue;
+    }
+
+    throw new Error(`Unknown option: ${current}`);
+  }
+
+  return args;
+}
+
+function getCurrentPr() {
+  try {
+    const output = execFileSync(
+      "gh",
+      [
+        "pr",
+        "view",
+        "--json",
+        "url,title,number,author,headRefName,baseRefName,reviewRequests",
+      ],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+    return JSON.parse(output);
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "failed to run gh command";
+    throw new Error(
+      `Unable to read current PR. Make sure you are in a repo branch with an open PR and gh is authenticated. (${message})`,
+    );
+  }
+}
+
+function buildMessage(pr, args) {
+  const url = args.url || pr.url;
+  if (args.rawUrlOnly) {
+    return args.message ? `${url}\n${args.message}` : url;
+  }
+
+  if (args.url) {
+    const label = args.title ? args.title : "Pull Request";
+    const link = `<${url}|${label}>`;
+    const suffix = args.message ? `\n${args.message}` : "";
+    return `PR ${link}${suffix}`;
+  }
+
+  const author = pr.author?.login ? ` by ${pr.author.login}` : "";
+  const link = `<${url}|#${pr.number} ${pr.title}>`;
+  const branch = `(${pr.headRefName} -> ${pr.baseRefName})`;
+  const suffix = args.message ? `\n${args.message}` : "";
+  return `PR ${link}${author} ${branch}${suffix}`;
+}
+
+function parseSlackUserMap(rawMap) {
+  if (!rawMap) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(rawMap);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("map must be a JSON object");
+    }
+    return parsed;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid Slack user map JSON: ${message}`);
+  }
+}
+
+function parseTeamMap(rawMap) {
+  if (!rawMap) {
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(rawMap);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("map must be a JSON object");
+    }
+    return parsed;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid team map JSON: ${message}`);
+  }
+}
+
+function getReviewRequests(pr) {
+  const reviewRequests = pr.reviewRequests;
+  if (!reviewRequests) {
+    return [];
+  }
+
+  if (Array.isArray(reviewRequests)) {
+    return reviewRequests;
+  }
+  if (Array.isArray(reviewRequests.nodes)) {
+    return reviewRequests.nodes;
+  }
+  if (Array.isArray(reviewRequests.edges)) {
+    return reviewRequests.edges.map((edge) => edge.node).filter(Boolean);
+  }
+  return [];
+}
+
+function toReviewerName(reviewRequest) {
+  if (typeof reviewRequest === "string" && reviewRequest.trim()) {
+    return reviewRequest.trim();
+  }
+  if (!reviewRequest || typeof reviewRequest !== "object") {
+    return "";
+  }
+
+  const directLogin =
+    typeof reviewRequest.login === "string" ? reviewRequest.login : "";
+  if (directLogin) {
+    return directLogin;
+  }
+
+  const requestedReviewer =
+    typeof reviewRequest.requestedReviewer === "object"
+      ? reviewRequest.requestedReviewer
+      : null;
+  if (requestedReviewer) {
+    if (typeof requestedReviewer.login === "string" && requestedReviewer.login) {
+      return requestedReviewer.login;
+    }
+    if (typeof requestedReviewer.name === "string" && requestedReviewer.name) {
+      return requestedReviewer.name;
+    }
+  }
+
+  if (typeof reviewRequest.name === "string" && reviewRequest.name) {
+    return reviewRequest.name;
+  }
+
+  return "";
+}
+
+function parseReviewers(rawValue) {
+  if (!rawValue) {
+    return [];
+  }
+  return rawValue
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean);
+}
+
+function pickRandomItems(values, count) {
+  if (count <= 0 || values.length === 0) {
+    return [];
+  }
+
+  const shuffled = [...values];
+  for (let i = shuffled.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+
+  return shuffled.slice(0, Math.min(count, shuffled.length));
+}
+
+function normalizeSlackTeamMention(rawValue) {
+  if (!rawValue) {
+    return "";
+  }
+
+  if (rawValue.startsWith("<")) {
+    return rawValue;
+  }
+
+  // Slack user group IDs typically look like S01234567.
+  if (/^S[A-Z0-9]+$/i.test(rawValue)) {
+    return `<!subteam^${rawValue}>`;
+  }
+
+  return rawValue;
+}
+
+function resolveTeamRef(rawTeamRef, teamMap) {
+  if (!rawTeamRef) {
+    return "";
+  }
+  const trimmedRef = rawTeamRef.trim();
+  if (!trimmedRef) {
+    return "";
+  }
+
+  if (
+    typeof teamMap[trimmedRef] === "string" &&
+    teamMap[trimmedRef].trim()
+  ) {
+    return teamMap[trimmedRef].trim();
+  }
+
+  const loweredRef = trimmedRef.toLowerCase();
+  for (const key of Object.keys(teamMap)) {
+    if (key.toLowerCase() === loweredRef) {
+      const mapped = teamMap[key];
+      if (typeof mapped === "string" && mapped.trim()) {
+        return mapped.trim();
+      }
+      break;
+    }
+  }
+
+  return trimmedRef;
+}
+
+function buildReviewerSuffix(pr, args, slackUserMap, teamMap) {
+  const sections = [];
+
+  const resolvedTeamRef = resolveTeamRef(args.team, teamMap);
+  const teamMention = normalizeSlackTeamMention(resolvedTeamRef);
+  if (teamMention) {
+    sections.push(`Team: ${teamMention}`);
+  }
+
+  const mapReviewerNames = Object.keys(slackUserMap).filter(Boolean);
+  const shouldIncludeReviewers =
+    Boolean(args.reviewers) || args.maxReviewers > 0 || args.randomReviewers;
+  if (!shouldIncludeReviewers) {
+    return sections.length > 0 ? `\n${sections.join("\n")}` : "";
+  }
+
+  const selectedReviewers = parseReviewers(args.reviewers);
+  let uniqueReviewerNames = [...new Set(selectedReviewers)];
+
+  if (uniqueReviewerNames.length === 0) {
+    if (args.randomReviewers && mapReviewerNames.length > 0) {
+      const fallbackCount = args.maxReviewers > 0 ? args.maxReviewers : 2;
+      uniqueReviewerNames = pickRandomItems(mapReviewerNames, fallbackCount);
+    } else {
+      uniqueReviewerNames = [...new Set(
+        getReviewRequests(pr)
+          .map(toReviewerName)
+          .filter(Boolean),
+      )];
+    }
+  }
+
+  if (args.maxReviewers > 0) {
+    uniqueReviewerNames = uniqueReviewerNames.slice(0, args.maxReviewers);
+  }
+
+  if (uniqueReviewerNames.length > 0) {
+    const mentionTokens = uniqueReviewerNames.map((name) => {
+      const slackId =
+        typeof slackUserMap[name] === "string" ? slackUserMap[name] : "";
+      return slackId ? `<@${slackId}>` : `@${name}`;
+    });
+    sections.push(`Reviewers: ${mentionTokens.join(" ")}`);
+  }
+
+  return sections.length > 0 ? `\n${sections.join("\n")}` : "";
+}
+
+async function postToSlack(webhook, text) {
+  const response = await fetch(webhook, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Slack webhook failed: ${response.status} ${body}`);
+  }
+}
+
+async function main() {
+  try {
+    const args = parseArgs(process.argv.slice(2));
+
+    if (args.help) {
+      process.stdout.write(HELP_TEXT.trimStart());
+      process.stdout.write("\n");
+      return;
+    }
+
+    if (!args.dryRun && !args.webhook) {
+      throw new Error(
+        "Slack webhook is required. Set SLACK_WEBHOOK_URL or pass --webhook.",
+      );
+    }
+
+    const slackUserMap = parseSlackUserMap(args.slackUserMap);
+    const teamMap = parseTeamMap(args.teamMap);
+    const pr = args.url ? { url: args.url } : getCurrentPr();
+    const baseText = buildMessage(pr, args);
+    const reviewerSuffix = buildReviewerSuffix(pr, args, slackUserMap, teamMap);
+    const text = `${baseText}${reviewerSuffix}`;
+
+    if (args.dryRun) {
+      process.stdout.write(JSON.stringify({ text }, null, 2));
+      process.stdout.write("\n");
+      return;
+    }
+
+    await postToSlack(args.webhook, text);
+    process.stdout.write(`Sent to Slack: ${pr.url}\n`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`pr2slack error: ${message}\n`);
+    process.exitCode = 1;
+  }
+}
+
+main();
