@@ -1,7 +1,7 @@
 {
   "name": "@esmyy/pr2slack",
   "private": false,
-  "version": "1.0.12",
+  "version": "0.1.0",
   "description": "Send current GitHub pull request to Slack via incoming webhook",
   "type": "module",
   "main": "pr2slack.js",
