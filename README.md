@@ -27,29 +27,38 @@ Example Slack message:
 npm install -g @esmyy/pr2slack
 ```
 
-2. Create a Slack Incoming Webhook for your channel.
-3. Set `SLACK_WEBHOOK_URL` permanently in your shell profile:
+2. Important: install and authenticate GitHub CLI (`gh`) for PR lookup mode:
+
+```bash
+gh --version
+gh auth status || gh auth login
+```
+
+If you only use `--url`, you can skip this step.
+
+3. Create a Slack Incoming Webhook for your channel.
+4. Set `SLACK_WEBHOOK_URL` permanently in your shell profile:
 
 ```bash
 echo 'export SLACK_WEBHOOK_URL="https://hooks.slack.com/services/XXX/YYY/ZZZ"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-4. Optional: add GitHub-to-Slack user mapping (for real `@` mentions):
+5. Optional: add GitHub-to-Slack user mapping (for real `@` mentions):
 
 ```bash
 echo 'export SLACK_USER_MAP="{\"alice\":\"U01234567\",\"bob\":\"U07654321\"}"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-5. Optional: set your most-used reviewers as default:
+6. Optional: set your most-used reviewers as default:
 
 ```bash
 echo 'export PR2SLACK_DEFAULT_REVIEWERS="alice,bob"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-6. Optional: set default team mention:
+7. Optional: set default team mention:
 
 ```bash
 echo 'export PR2SLACK_TEAM_MAP="{\"backend\":\"S01234567\",\"mobile\":\"S07654321\"}"' >> ~/.zshrc
@@ -57,7 +66,7 @@ echo 'export PR2SLACK_DEFAULT_TEAM="backend"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-7. Run the tool:
+8. Run the tool:
 
 ```bash
 pr2slack
