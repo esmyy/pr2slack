@@ -19,9 +19,10 @@ Options:
                         Comma-separated reviewers to mention
                         (example: alice,bob)
                         (default: env PR2SLACK_DEFAULT_REVIEWERS)
-  --random              Pick random reviewers from SLACK_USER_MAP keys
-  --max-reviewers <n>   Mention at most n reviewers
-  --team <name|ref>     Slack team mention (map key, subteam ID, token, or text)
+  --random [n]          Pick random reviewers from SLACK_USER_MAP keys
+                        (default n: 2)
+                        (overrides reviewers/team defaults and flags)
+  --team [name|ref]     Slack team mention (map key, subteam ID, token, or text)
                         (default: env PR2SLACK_DEFAULT_TEAM)
   --team-map <json>     JSON map: team name -> Slack subteam ID
                         (default: env PR2SLACK_TEAM_MAP)
@@ -39,7 +40,7 @@ Examples:
   pr2slack --url https://github.com/org/repo/pull/123
   pr2slack -r alice,bob
   pr2slack --random
-  pr2slack -r alice,bob --max-reviewers 2
+  pr2slack --random 3
   pr2slack --team backend
   pr2slack --raw-url-only
 `;
@@ -63,7 +64,7 @@ function parseArgs(argv) {
     reviewers: "",
     reviewersFromCli: false,
     randomReviewers: false,
-    maxReviewers: 0,
+    randomCount: 2,
     team: "",
     teamFromCli: false,
     teamMap: process.env.PR2SLACK_TEAM_MAP ?? process.env.SLACK_TEAM_MAP ?? "",
@@ -99,27 +100,30 @@ function parseArgs(argv) {
     }
     if (current === "--random") {
       args.randomReviewers = true;
-      continue;
-    }
-    if (current === "--max-reviewers") {
-      if (!next) {
-        throw new Error("Missing value for --max-reviewers");
+      if (next && !next.startsWith("-")) {
+        const parsed = Number.parseInt(next, 10);
+        if (!Number.isInteger(parsed) || parsed < 1) {
+          throw new Error("--random value must be a positive integer");
+        }
+        args.randomCount = parsed;
+        i += 1;
       }
-      const parsed = Number.parseInt(next, 10);
-      if (!Number.isInteger(parsed) || parsed < 1) {
-        throw new Error("--max-reviewers must be a positive integer");
-      }
-      args.maxReviewers = parsed;
-      i += 1;
       continue;
     }
     if (current === "--team") {
-      if (!next) {
-        throw new Error("Missing value for --team");
+      // Support "--team" without a value: fallback to default team.
+      const hasValue = Boolean(next) && !next.startsWith("-");
+      if (hasValue) {
+        args.team = next;
+        i += 1;
+      } else if (defaultTeam) {
+        args.team = defaultTeam;
+      } else {
+        throw new Error(
+          "Missing value for --team and PR2SLACK_DEFAULT_TEAM is not set.",
+        );
       }
-      args.team = next;
       args.teamFromCli = true;
-      i += 1;
       continue;
     }
     if (current === "--team-map") {
@@ -172,6 +176,13 @@ function parseArgs(argv) {
     }
 
     throw new Error(`Unknown option: ${current}`);
+  }
+
+  // --random has highest priority and ignores reviewer/team inputs.
+  if (args.randomReviewers) {
+    args.reviewers = "";
+    args.team = "";
+    return args;
   }
 
   // Precedence:
@@ -386,12 +397,25 @@ function resolveTeamRef(rawTeamRef, teamMap) {
 }
 
 function buildReviewerSuffix(pr, args, slackUserMap, teamMap) {
+  const mapReviewerNames = Object.keys(slackUserMap).filter(Boolean);
+
+  if (args.randomReviewers) {
+    const randomReviewerNames = pickRandomItems(mapReviewerNames, args.randomCount);
+    if (randomReviewerNames.length === 0) {
+      return "";
+    }
+    const mentionTokens = randomReviewerNames.map((name) => {
+      const slackId =
+        typeof slackUserMap[name] === "string" ? slackUserMap[name] : "";
+      return slackId ? `<@${slackId}>` : `@${name}`;
+    });
+    return `\nReviewers: ${mentionTokens.join(" ")}`;
+  }
+
   const resolvedTeamRef = resolveTeamRef(args.team, teamMap);
   const teamMention = normalizeSlackTeamMention(resolvedTeamRef);
 
-  const mapReviewerNames = Object.keys(slackUserMap).filter(Boolean);
-  const shouldIncludeReviewers =
-    Boolean(args.reviewers) || args.maxReviewers > 0 || args.randomReviewers;
+  const shouldIncludeReviewers = Boolean(args.reviewers);
   if (!shouldIncludeReviewers) {
     return teamMention ? `\nTeam: ${teamMention}` : "";
   }
@@ -400,20 +424,11 @@ function buildReviewerSuffix(pr, args, slackUserMap, teamMap) {
   let uniqueReviewerNames = [...new Set(selectedReviewers)];
 
   if (uniqueReviewerNames.length === 0) {
-    if (args.randomReviewers && mapReviewerNames.length > 0) {
-      const fallbackCount = args.maxReviewers > 0 ? args.maxReviewers : 2;
-      uniqueReviewerNames = pickRandomItems(mapReviewerNames, fallbackCount);
-    } else {
-      uniqueReviewerNames = [...new Set(
-        getReviewRequests(pr)
-          .map(toReviewerName)
-          .filter(Boolean),
-      )];
-    }
-  }
-
-  if (args.maxReviewers > 0) {
-    uniqueReviewerNames = uniqueReviewerNames.slice(0, args.maxReviewers);
+    uniqueReviewerNames = [...new Set(
+      getReviewRequests(pr)
+        .map(toReviewerName)
+        .filter(Boolean),
+    )];
   }
 
   if (uniqueReviewerNames.length > 0) {
@@ -422,7 +437,12 @@ function buildReviewerSuffix(pr, args, slackUserMap, teamMap) {
         typeof slackUserMap[name] === "string" ? slackUserMap[name] : "";
       return slackId ? `<@${slackId}>` : `@${name}`;
     });
-    return `\nReviewers: ${mentionTokens.join(" ")}`;
+    const reviewersLine = `Reviewers: ${mentionTokens.join(" ")}`;
+    const explicitReviewerIntent = args.reviewersFromCli;
+    if (teamMention && args.teamFromCli && explicitReviewerIntent) {
+      return `\nTeam: ${teamMention}\n${reviewersLine}`;
+    }
+    return `\n${reviewersLine}`;
   }
 
   return teamMention ? `\nTeam: ${teamMention}` : "";

@@ -83,17 +83,20 @@ Options:
 - `-m, --message <text>`: Extra note appended after the PR link
 - `-r, --reviewers <list>`: Mention selected reviewers
   (comma-separated GitHub logins, for example `alice,bob`)
-- `--random`: Pick random reviewers from `SLACK_USER_MAP` keys
-- `--max-reviewers <n>`: Mention at most `n` reviewers
-- `-r`, `--random`, or `--max-reviewers` enables reviewer mentions
+- `--random [n]`: Pick random reviewers from `SLACK_USER_MAP` keys
+- `--random` default count is `2`; example `--random 3`
+- `--random` has highest priority and ignores reviewer/team defaults and flags
+- `-r` or `--random` enables reviewer mentions
 - Default reviewers can come from `PR2SLACK_DEFAULT_REVIEWERS`
-- `--team <name|ref>`: Add team mention by team name or raw ref
+- `--team [name|ref]`: Add team mention by team name or raw ref
+- If `--team` is passed without a value, it uses `PR2SLACK_DEFAULT_TEAM`
 - `--team-map <json>`: JSON map `{"backend":"S01234567","mobile":"S07654321"}`
   (defaults to `PR2SLACK_TEAM_MAP`)
 - Default team can come from `PR2SLACK_DEFAULT_TEAM`
-- If reviewer mentions are included, team mention is skipped
-- Precedence: CLI `-r`/`--team` wins; if neither is provided, use
-  `PR2SLACK_DEFAULT_REVIEWERS`; if empty, use `PR2SLACK_DEFAULT_TEAM`
+- If both `--team` and reviewer options are explicitly provided, both are included
+- Precedence: `--random` first; otherwise CLI `-r`/`--team`; if neither is
+  provided, use `PR2SLACK_DEFAULT_REVIEWERS`; if empty, use
+  `PR2SLACK_DEFAULT_TEAM`
 - `--slack-user-map <json>`: JSON map `{"githubLogin":"SLACK_USER_ID"}`
   (defaults to `SLACK_USER_MAP`)
 - `--raw-url-only`: Send only PR URL (plus optional message)
@@ -118,13 +121,16 @@ pr2slack
 # Pick 2 random reviewers from SLACK_USER_MAP
 pr2slack --random
 
-# Mention at most two reviewers from requested reviewers
-pr2slack --max-reviewers 2
+# Pick 3 random reviewers from SLACK_USER_MAP
+pr2slack --random 3
 
 # Mention a Slack user group (team)
 pr2slack --team backend
 
-# If reviewers are included, only reviewers are mentioned (team is skipped)
+# Use default team via flag (no explicit value)
+pr2slack --team
+
+# If both are explicitly provided, both team and reviewers are mentioned
 pr2slack --team mobile -r alice,bob
 
 # Override team map inline
