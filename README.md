@@ -52,7 +52,7 @@ source ~/.zshrc
 6. Optional: set default team mention:
 
 ```bash
-echo 'export SLACK_TEAM_MAP="{\"backend\":\"S01234567\",\"mobile\":\"S07654321\"}"' >> ~/.zshrc
+echo 'export PR2SLACK_TEAM_MAP="{\"backend\":\"S01234567\",\"mobile\":\"S07654321\"}"' >> ~/.zshrc
 echo 'export PR2SLACK_DEFAULT_TEAM="backend"' >> ~/.zshrc
 source ~/.zshrc
 ```
@@ -89,8 +89,11 @@ Options:
 - Default reviewers can come from `PR2SLACK_DEFAULT_REVIEWERS`
 - `--team <name|ref>`: Add team mention by team name or raw ref
 - `--team-map <json>`: JSON map `{"backend":"S01234567","mobile":"S07654321"}`
-  (defaults to `SLACK_TEAM_MAP`)
+  (defaults to `PR2SLACK_TEAM_MAP`)
 - Default team can come from `PR2SLACK_DEFAULT_TEAM`
+- If reviewer mentions are included, team mention is skipped
+- Precedence: CLI `-r`/`--team` wins; if neither is provided, use
+  `PR2SLACK_DEFAULT_REVIEWERS`; if empty, use `PR2SLACK_DEFAULT_TEAM`
 - `--slack-user-map <json>`: JSON map `{"githubLogin":"SLACK_USER_ID"}`
   (defaults to `SLACK_USER_MAP`)
 - `--raw-url-only`: Send only PR URL (plus optional message)
@@ -121,7 +124,7 @@ pr2slack --max-reviewers 2
 # Mention a Slack user group (team)
 pr2slack --team backend
 
-# Team mention + selected reviewers together
+# If reviewers are included, only reviewers are mentioned (team is skipped)
 pr2slack --team mobile -r alice,bob
 
 # Override team map inline

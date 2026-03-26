@@ -24,7 +24,7 @@ Options:
   --team <name|ref>     Slack team mention (map key, subteam ID, token, or text)
                         (default: env PR2SLACK_DEFAULT_TEAM)
   --team-map <json>     JSON map: team name -> Slack subteam ID
-                        (default: env SLACK_TEAM_MAP)
+                        (default: env PR2SLACK_TEAM_MAP)
   --slack-user-map <json>
                         JSON map: GitHub login -> Slack user ID
                         (default: env SLACK_USER_MAP)
@@ -45,23 +45,28 @@ Examples:
 `;
 
 function parseArgs(argv) {
+  const defaultReviewers =
+    process.env.PR2SLACK_DEFAULT_REVIEWERS ??
+    process.env.PR2SLACK_REVIEWERS ??
+    "";
+  const defaultTeam =
+    process.env.PR2SLACK_DEFAULT_TEAM ??
+    process.env.PR2SLACK_TEAM ??
+    "";
+
   const args = {
     webhook: process.env.SLACK_WEBHOOK_URL ?? "",
     slackUserMap: process.env.SLACK_USER_MAP ?? "",
     url: "",
     title: "",
     message: "",
-    reviewers:
-      process.env.PR2SLACK_DEFAULT_REVIEWERS ??
-      process.env.PR2SLACK_REVIEWERS ??
-      "",
+    reviewers: "",
+    reviewersFromCli: false,
     randomReviewers: false,
     maxReviewers: 0,
-    team:
-      process.env.PR2SLACK_DEFAULT_TEAM ??
-      process.env.PR2SLACK_TEAM ??
-      "",
-    teamMap: process.env.SLACK_TEAM_MAP ?? "",
+    team: "",
+    teamFromCli: false,
+    teamMap: process.env.PR2SLACK_TEAM_MAP ?? process.env.SLACK_TEAM_MAP ?? "",
     rawUrlOnly: false,
     dryRun: false,
     help: false,
@@ -88,6 +93,7 @@ function parseArgs(argv) {
         throw new Error("Missing value for -r/--reviewers");
       }
       args.reviewers = next;
+      args.reviewersFromCli = true;
       i += 1;
       continue;
     }
@@ -112,6 +118,7 @@ function parseArgs(argv) {
         throw new Error("Missing value for --team");
       }
       args.team = next;
+      args.teamFromCli = true;
       i += 1;
       continue;
     }
@@ -165,6 +172,17 @@ function parseArgs(argv) {
     }
 
     throw new Error(`Unknown option: ${current}`);
+  }
+
+  // Precedence:
+  // 1) Explicit CLI values (-r / --team)
+  // 2) If neither provided: default reviewers, else default team
+  if (!args.reviewersFromCli && !args.teamFromCli) {
+    if (defaultReviewers) {
+      args.reviewers = defaultReviewers;
+    } else if (defaultTeam) {
+      args.team = defaultTeam;
+    }
   }
 
   return args;
@@ -368,19 +386,14 @@ function resolveTeamRef(rawTeamRef, teamMap) {
 }
 
 function buildReviewerSuffix(pr, args, slackUserMap, teamMap) {
-  const sections = [];
-
   const resolvedTeamRef = resolveTeamRef(args.team, teamMap);
   const teamMention = normalizeSlackTeamMention(resolvedTeamRef);
-  if (teamMention) {
-    sections.push(`Team: ${teamMention}`);
-  }
 
   const mapReviewerNames = Object.keys(slackUserMap).filter(Boolean);
   const shouldIncludeReviewers =
     Boolean(args.reviewers) || args.maxReviewers > 0 || args.randomReviewers;
   if (!shouldIncludeReviewers) {
-    return sections.length > 0 ? `\n${sections.join("\n")}` : "";
+    return teamMention ? `\nTeam: ${teamMention}` : "";
   }
 
   const selectedReviewers = parseReviewers(args.reviewers);
@@ -409,10 +422,10 @@ function buildReviewerSuffix(pr, args, slackUserMap, teamMap) {
         typeof slackUserMap[name] === "string" ? slackUserMap[name] : "";
       return slackId ? `<@${slackId}>` : `@${name}`;
     });
-    sections.push(`Reviewers: ${mentionTokens.join(" ")}`);
+    return `\nReviewers: ${mentionTokens.join(" ")}`;
   }
 
-  return sections.length > 0 ? `\n${sections.join("\n")}` : "";
+  return teamMention ? `\nTeam: ${teamMention}` : "";
 }
 
 async function postToSlack(webhook, text) {
